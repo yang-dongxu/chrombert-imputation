@@ -1,0 +1,35 @@
+data:
+  emb_path: /workspace/experiments/1.original/1.prepare_dataset/6.convert_zarr/emb_mm10_original_chr1_v3.zarr
+  path_train: /workspace/experiments/1.original/1.prepare_dataset/4.make_dataset/output/align_minimal_train_chr1.parquet
+  path_val: /workspace/experiments/1.original/1.prepare_dataset/4.make_dataset/output/align_minimal_val_chr1.parquet
+  path_test: /workspace/experiments/1.original/1.prepare_dataset/4.make_dataset/output/align_minimal_test_chr1.parquet
+  batch_size: 256
+  num_workers: 32
+
+
+trainer:
+  max_epochs: 5
+  fast_dev_run: false
+  precision: "bf16-mixed"
+  accelerator: "auto"
+  devices: "auto"
+  gradient_clip_val: 1.0
+  overfit_batches: 0.0
+  val_check_interval: 0.01
+  limit_val_batches: 0.2
+  accumulate_grad_batches: 8
+  default_root_dir: "output"
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: "val/cross_entropy_loss_epoch"
+        mode: "min"
+        save_top_k: 3
+        save_last: true
+        filename: "imputation-{epoch:02d}-{val/epoch_accuracy:.4f}.ckpt"
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: "output/logs"
+      name: "imputation"
+
