@@ -42,26 +42,6 @@ class EmbHandler():
         emb = self.arrays[part][index_raw]
         return emb
 
-class BlockShuffleSampler(Sampler):
-    def __init__(self, data_source, batch_size, block_size_factor=100):
-        self.data_source = data_source
-        self.block_size = batch_size * block_size_factor
-
-    def __iter__(self):
-        n = len(self.data_source)
-        indices = np.arange(n)
-        
-        # Split into blocks to preserve locality (e.g. within Zarr chunks or samples)
-        # Shuffle the blocks to provide randomness
-        blocks = [indices[i:i + self.block_size] for i in range(0, n, self.block_size)]
-        np.random.shuffle(blocks)
-        
-        # Flatten and iterate
-        return iter(np.concatenate(blocks))
-
-    def __len__(self):
-        return len(self.data_source)
-
 
 class ImputationDataset(Dataset):
     def __init__(self, emb_hander: EmbHandler, peaks_path: str):
@@ -119,11 +99,11 @@ class ImputationDataModule(pl.LightningDataModule):
         self.test_dataset = ImputationDataset(self.emb_handler, peaks_path = self.path_test)
 
     def train_dataloader(self):
-        sampler = BlockShuffleSampler(self.train_dataset, batch_size=self.batch_size)
         return DataLoader(
             self.train_dataset, 
             batch_size=self.batch_size, 
-            sampler=sampler, 
+            shuffle=True,
+            # sampler=sampler, 
             num_workers=self.num_workers, 
             pin_memory=True, 
             persistent_workers=True,
@@ -134,7 +114,7 @@ class ImputationDataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_dataset, 
             batch_size=self.batch_size, 
-            shuffle=False, 
+            shuffle=True, 
             num_workers=self.num_workers, 
             pin_memory=True, 
             persistent_workers=True,
