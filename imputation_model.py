@@ -64,7 +64,7 @@ class ImputationModel(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.model = ChromBERTPrompt(dropout = dropout)
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = nn.BCEWithLogitsLoss()
         self.lr = lr
         self.weight_decay = weight_decay
 
