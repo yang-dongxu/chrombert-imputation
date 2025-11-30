@@ -46,6 +46,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--num_cell_parallel",
+        type=int,
+        default = 5,
+        help="Number of cells to process in parallel"
+    )
+
+    parser.add_argument(
         "--atac-dir",
         type=str,
         required=True,
@@ -103,7 +110,11 @@ def main():
         cts_unique = [line.strip() for line in f.readlines() if line.strip() != "zarr.json"]
         cts_unique = sorted(list(set(cts_unique)))
 
-    print(f"Found {len(cts_unique)} unique cell types: {cts_unique}")
+    cts_group = []
+    for i in range(0, len(cts_unique), args.num_cell_parallel):
+        cts_group.append(cts_unique[i:i+args.num_cell_parallel])
+
+    print(f"Found {len(cts_group)} groups of {args.num_cell_parallel} cell types")
     print(f"Found {len(regulators_unique)} unique regulators: {regulators_unique}")
 
     # Load whole embedding matrix
@@ -120,20 +131,23 @@ def main():
     output_zarr = zarr.open(odir, mode="a")
 
     # Run inference for each cell type
-    for ct in cts_unique:
-        print(f"\nProcessing cell type: {ct}")
-        emb_ct = torch.from_numpy(zarr.load(path_zarr_atac / f"{ct}")).to(
-            device="cuda", dtype=torch.bfloat16
-        )
+    for cts in cts_group:
+        dict_cache_ct = {}
+        dict_arr_ct = {}
+        print(f"\nProcessing cell types: {cts}")
+        for ct in cts:
+            emb_ct = torch.from_numpy(zarr.load(path_zarr_atac / f"{ct}")).to(
+                device="cuda", dtype=torch.bfloat16
+            )
+            dict_cache_ct[ct] = emb_ct
 
-        # Create array for this cell type
-        arr = output_zarr.create_array(
-            ct,
-            shape=(emb_ct.shape[0], len(regulators_unique)),
-            dtype=np.float16,
-            chunks=(emb_ct.shape[0], 1)
-        )
-        arr.attrs["regulators"] = regulators_unique
+            dict_arr_ct[ct] = output_zarr.create_array(
+                ct,
+                shape=(emb_ct.shape[0], len(regulators_unique)),
+                dtype=np.float16,
+                chunks=(emb_ct.shape[0], 1)
+            )
+            dict_arr_ct[ct].attrs["regulators"] = regulators_unique
 
         # Run inference for each regulator
         for i, regulator in enumerate(tqdm(regulators_unique, desc=f"  Regulators")):
@@ -142,8 +156,11 @@ def main():
             ).to(device="cuda", dtype=torch.bfloat16)
 
             with torch.no_grad():
-                logit = model(emb_ct, emb_regulator, mtx_whole)
-                arr[:, i] = logit.float().cpu().numpy().astype(np.float16)
+                for ct in cts:
+                    emb_ct = dict_cache_ct[ct]
+                    arr = dict_arr_ct[ct]
+                    logit = model(emb_ct, emb_regulator, mtx_whole)
+                    arr[:, i] = logit.float().cpu().numpy().astype(np.float16)
 
     print(f"\nInference complete! Results saved to: {odir / 'logits'}")
 
