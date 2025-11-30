@@ -24,14 +24,14 @@ class EmbHandler():
 
         region_path = os.path.join(self.path_emb, "region")
         raw_indices = zarr.open(region_path, mode="r")[:, 3].astype(int)
-        self.indice_maps = {index: i for i, index in enumerate(raw_indices)}
+        self.indice_maps = {index:i for i, index in enumerate(raw_indices)} # raw in new
         return len(self.indice_maps)
 
     def get(self, index, part):
         if self.handler is None:
             self.handler = zarr.open(self.path_emb, mode="r")
 
-        index_raw = self.indice_maps[index]
+        index_new = self.indice_maps[index]
         
         if part not in self.arrays:
             if part is None:
@@ -39,7 +39,7 @@ class EmbHandler():
             else:
                 self.arrays[part] = self.handler[part]
         
-        emb = self.arrays[part][index_raw]
+        emb = self.arrays[part][index_new]
         return emb
 
 
