@@ -12,27 +12,34 @@ from torch.utils.data import Dataset, Sampler
 from lightning import pytorch as pl
 from torch.utils.data import DataLoader
 
+import os
+import zarr
+import torch
+import numpy as np
 
 class EmbHandler:
     """
-    Embedding handler backed by shared-memory tensors.
+    Embedding handler with:
+    - Fixed cached parts (decided in preload()) stored as shared-memory tensors.
+    - Non-cached parts are always loaded on demand from Zarr and NOT stored.
 
-    - Preload once in main process with .preload(parts).
-    - All DataLoader workers (even with spawn) see the same shared tensors.
+    This prevents the cache from silently growing when new parts appear.
     """
 
     _indice_maps = None          # dict[raw_index] -> row index
     _handler = None              # zarr.Group
-    _tensors = {}                # part -> torch.Tensor (shared-memory)
+    _tensors = {}                # part -> shared-memory tensor
+    _cached_parts = set()        # parts that are allowed to live in _tensors
 
     def __init__(self, path_emb: str, dtype=torch.float32):
         self.path_emb = path_emb
         self.dtype = dtype
 
-        # Instance views of class-level caches
+        # Views of class-level state
         self.indice_maps = EmbHandler._indice_maps
         self.handler = EmbHandler._handler
         self.tensors = EmbHandler._tensors
+        self.cached_parts = EmbHandler._cached_parts
 
         self.__build_indices__()
 
@@ -53,45 +60,81 @@ class EmbHandler:
         self.handler = EmbHandler._handler
 
     def _load_part_to_shared(self, part: str):
-        """Load a single part into a shared-memory tensor."""
+        """Load a single part into a shared-memory tensor (for cached parts only)."""
         self._ensure_handler()
 
         if part == "whole":
-            np_arr = self.handler["whole"][:]       # (n_regions, d)
+            np_arr = self.handler["whole"][:]      # (n_regions, d)
         else:
-            np_arr = self.handler[part][:]          # (n_regions, d)
+            np_arr = self.handler[part][:]         # (n_regions, d)
 
-        # numpy -> tensor
         t = torch.from_numpy(np_arr).to(self.dtype)
-        # put storage into shared memory
-        t.share_memory_()
+        t.share_memory_()  # shared across workers
 
         EmbHandler._tensors[part] = t
         self.tensors = EmbHandler._tensors
 
     def preload(self, parts):
         """
-        Preload all given parts into shared-memory tensors.
+        Define the fixed cache set and load them into shared memory.
 
-        Call ONCE in main process before DataLoader workers are created.
+        - parts: iterable of part names to be cached (e.g. "whole", "atac/...", "regulator/...").
+
+        After this:
+        - Only parts in this set will ever be stored in `_tensors`.
+        - Others will always be read from Zarr on-demand.
         """
-        for part in parts:
-            if part in EmbHandler._tensors:
-                continue
-            self._load_part_to_shared(part)
+        # Update the global cached set
+        if EmbHandler._cached_parts:
+            EmbHandler._cached_parts |= set(parts)
+        else:
+            EmbHandler._cached_parts = set(parts)
+
+        self.cached_parts = EmbHandler._cached_parts
+
+        # Load each cached part into shared memory if not already loaded
+        for part in self.cached_parts:
+            if part not in EmbHandler._tensors:
+                self._load_part_to_shared(part)
+
+        self.tensors = EmbHandler._tensors
+
+    def _get_from_zarr_on_demand(self, index_new: int, part: str) -> torch.Tensor:
+        """
+        For non-cached parts: read a single row from Zarr, do NOT store globally.
+        """
+        self._ensure_handler()
+
+        if part == "whole":
+            np_row = self.handler["whole"][index_new]
+        else:
+            np_row = self.handler[part][index_new]
+
+        return torch.from_numpy(np_row).to(self.dtype)
 
     def get(self, index, part: str) -> torch.Tensor:
         """
-        Get shared-memory tensor row for a given raw region index and part.
-        Returns a 1D tensor.
+        Get embedding for raw region index and part.
+
+        Behavior:
+        - If part in fixed cache set -> served from shared-memory tensor.
+        - If part not in cache set -> read that row from Zarr each time, no caching.
         """
         index_new = self.indice_maps[index]
 
-        if part not in self.tensors:
-            # Lazy load missing parts into shared memory
-            self._load_part_to_shared(part)
+        # 1) If already loaded in cache -> just slice
+        if part in self.tensors:
+            return self.tensors[part][index_new]
 
-        return self.tensors[part][index_new]
+        # 2) If this part belongs to the fixed cache set but wasn't loaded yet
+        #    (e.g. preload didn't include it but cached_parts updated later),
+        #    we allow loading ONCE into shared cache.
+        if part in self.cached_parts:
+            self._load_part_to_shared(part)
+            return self.tensors[part][index_new]
+
+        # 3) Non-cached part: pure on-demand read, no cache pollution
+        return self._get_from_zarr_on_demand(index_new, part)
 
 class ImputationDataset(Dataset):
     def __init__(self, emb_hander: EmbHandler, peaks_path: str):
