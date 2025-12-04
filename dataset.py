@@ -268,16 +268,33 @@ class ImputationDataModule(pl.LightningDataModule):
         if self.emb_handler is None:
             self.emb_handler = EmbHandler(self.emb_path, dtype=self.emb_dtype)
             # 1) Collect frequencies from all splits
-            freq = self._collect_part_frequencies(
-                [self.path_train, self.path_val, self.path_test]
+            freq_val = self._collect_part_frequencies(
+                [self.path_val]
             )
+            freq_train = self._collect_part_frequencies(
+                [self.path_train]
+            )
+            # concat freq_val and freq_train
+            freq ={}
+            for k, v in freq_val.items():
+                freq[k] = v
+            for k, v in freq_train.items():
+                if k in freq:
+                    freq[k] += v
+                else:
+                    freq[k] = v
+
+            # all validation parts should be cached
+            max_num = max(freq.values())
+            for k,v in freq_val.items():
+                freq[k] = max_num + v
 
             # 2) Choose which parts to preload
             preload_parts = self._select_preload_parts(freq)
 
             print(f"[ImputationDataModule] Preloading {len(preload_parts)} parts "
-                  f"(max_preload_parts={self.max_preload_parts})")
-            print(f"[ImputationDataModule] Preloading parts: {preload_parts}")
+                  f"(max_preload_parts={self.max_preload_parts})", file=sys.stderr)
+            print(f"[ImputationDataModule] Preloading parts: {preload_parts}", file=sys.stderr)
             # 3) Preload in main process (before DataLoader workers)
             self.emb_handler.preload(preload_parts)
 
