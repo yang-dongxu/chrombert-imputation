@@ -114,7 +114,7 @@ class ImputationDataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_dataset, 
             batch_size=self.batch_size, 
-            shuffle=True, 
+            shuffle=False, 
             num_workers=self.num_workers, 
             pin_memory=True, 
             persistent_workers=True,
